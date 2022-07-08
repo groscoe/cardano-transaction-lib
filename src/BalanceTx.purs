@@ -305,7 +305,7 @@ evalExUnitsAndMinFee' unattachedTx =
     -- Calculate the minimum fee for a transaction:
     minFee <- ExceptT $ QueryM.calculateMinFee finalizedTx
       <#> bimap EvalMinFeeError unwrap
-    pure $ reindexedUnattachedTxWithExUnits /\ minFee
+    pure $ reindexedUnattachedTxWithExUnits /\ (fromInt 2 * minFee)
 
 evalExUnitsAndMinFee
   :: UnattachedUnbalancedTx
@@ -733,7 +733,7 @@ calculateMinUtxos coinsPerUtxoByte = map
 -- | required by each utxo.
 calculateMinUtxo :: Coin -> TransactionOutput -> BigInt
 calculateMinUtxo coinsPerUtxoByte txOut =
-  (unwrap coinsPerUtxoByte * fromInt 8) * utxoEntrySize txOut
+  (unwrap coinsPerUtxoByte * fromInt 9) * utxoEntrySize txOut
   where
   -- https://cardano-ledger.readthedocs.io/en/latest/explanations/min-utxo-mary.html
   -- https://github.com/input-output-hk/cardano-ledger/blob/master/doc/explanations/min-utxo-alonzo.rst
