@@ -16,6 +16,7 @@ module BalanceTx
   , ReturnAdaChangeError(..)
   , UtxosAtError(..)
   , balanceTx
+  , balanceTx'
   ) where
 
 import Prelude
@@ -419,18 +420,27 @@ _redeemersTxIns = lens' \(UnattachedUnbalancedTx rec@{ redeemersTxIns }) ->
 balanceTx
   :: UnattachedUnbalancedTx
   -> QueryM (Either BalanceTxError FinalizedTransaction)
-balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
+balanceTx = balanceTx' Nothing
+
+balanceTx'
+  :: Maybe Address
+  -> UnattachedUnbalancedTx
+  -> QueryM (Either BalanceTxError FinalizedTransaction)
+balanceTx' targetAddr unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
   let (UnbalancedTx { transaction: unbalancedTx, utxoIndex }) = t
   networkId <- (unbalancedTx ^. _body <<< _networkId) #
     maybe (asks _.networkId) pure
   let unbalancedTx' = unbalancedTx # _body <<< _networkId ?~ networkId
   utxoMinVal <- getAdaOnlyUtxoMinValue
+  
   runExceptT do
     -- Get own wallet address, collateral and utxo set:
-    ownAddr <- ExceptT $ QueryM.getWalletAddress <#>
-      note (GetWalletAddressError' CouldNotGetWalletAddress)
+    addrToBalance <- case targetAddr of
+                    Just addr -> pure addr
+                    _        -> ExceptT $ QueryM.getWalletAddress <#>
+                                  note (GetWalletAddressError' CouldNotGetWalletAddress)
     wallet <- asks _.wallet
-    utxos <- ExceptT $ utxosAt ownAddr <#>
+    utxos <- ExceptT $ utxosAt addrToBalance <#>
       (note (UtxosAtError' CouldNotGetUtxos) >>> map unwrap)
     collateral <- case wallet of
       Just w | isJust (cip30Wallet w) ->
@@ -461,21 +471,21 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
 
     -- Prebalance collaterised tx without fees:
     ubcTx <- except $
-      prebalanceCollateral zero availableUtxos ownAddr utxoMinVal
+      prebalanceCollateral zero availableUtxos addrToBalance utxoMinVal
         unbalancedCollTx
     -- Prebalance collaterised tx with fees:
     let unattachedTx' = unattachedTx # _transaction' .~ ubcTx
     _ /\ fees <- ExceptT $ evalExUnitsAndMinFee unattachedTx'
     ubcTx' <- except $
-      prebalanceCollateral (fees + feeBuffer) availableUtxos ownAddr utxoMinVal
+      prebalanceCollateral (fees + feeBuffer) availableUtxos addrToBalance utxoMinVal
         ubcTx
     -- Loop to balance non-Ada assets
-    nonAdaBalancedCollTx <- ExceptT $ loop availableUtxos ownAddr [] $
+    nonAdaBalancedCollTx <- ExceptT $ loop availableUtxos addrToBalance [] $
       unattachedTx' #
         _transaction' .~ ubcTx'
     -- Return excess Ada change to wallet:
     unsignedTx <- ExceptT $
-      returnAdaChangeAndFinalizeFees ownAddr allUtxos nonAdaBalancedCollTx
+      returnAdaChangeAndFinalizeFees addrToBalance allUtxos nonAdaBalancedCollTx
         <#>
           lmap ReturnAdaChangeError'
     -- Attach datums and redeemers, set the script integrity hash:
@@ -491,9 +501,9 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
     -> BigInt
     -> Transaction
     -> Either BalanceTxError Transaction
-  prebalanceCollateral fees utxos ownAddr adaOnlyUtxoMinValue tx =
+  prebalanceCollateral fees utxos addrToBalance adaOnlyUtxoMinValue tx =
     balanceTxIns utxos fees adaOnlyUtxoMinValue (tx ^. _body)
-      >>= balanceNonAdaOuts ownAddr utxos
+      >>= balanceNonAdaOuts addrToBalance utxos
       <#> flip (set _body) tx
 
   loop
@@ -502,7 +512,7 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
     -> MinUtxos
     -> UnattachedUnbalancedTx
     -> QueryM (Either BalanceTxError UnattachedUnbalancedTx)
-  loop utxoIndex' ownAddr' prevMinUtxos' unattachedTx' = do
+  loop utxoIndex' addrToBalance' prevMinUtxos' unattachedTx' = do
     coinsPerUtxoByte <- asks _.pparams <#> unwrap >>> _.coinsPerUtxoByte
     let
       Transaction { body: txBody'@(TxBody txB) } =
@@ -517,7 +527,7 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
       minUtxos' = prevMinUtxos' <> nextMinUtxos'
 
     unattachedTxWithBalancedBody <- chainedBalancer minUtxos' utxoIndex'
-      ownAddr'
+      addrToBalance'
       unattachedTx'
 
     case unattachedTxWithBalancedBody of
@@ -529,7 +539,7 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
           if txBody' == balancedTxBody then
             pure $ Right unattachedTxWithBalancedBody'
           else
-            loop utxoIndex' ownAddr' minUtxos' unattachedTxWithBalancedBody'
+            loop utxoIndex' addrToBalance' minUtxos' unattachedTxWithBalancedBody'
 
   chainedBalancer
     :: MinUtxos
@@ -537,11 +547,11 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
     -> Address
     -> UnattachedUnbalancedTx
     -> QueryM (Either BalanceTxError UnattachedUnbalancedTx)
-  chainedBalancer minUtxos' utxoIndex' ownAddr' unattachedTx' =
+  chainedBalancer minUtxos' utxoIndex' addrToBalance' unattachedTx' =
     getAdaOnlyUtxoMinValue >>= \utxoMinVal -> runExceptT do
       let Transaction tx@{ body: txBody' } = unattachedTx' ^. _transaction'
       txBodyWithoutFees' <- except $
-        preBalanceTxBody minUtxos' zero utxoIndex' ownAddr' utxoMinVal txBody'
+        preBalanceTxBody minUtxos' zero utxoIndex' addrToBalance' utxoMinVal txBody'
       let
         tx' = wrap tx { body = txBodyWithoutFees' }
         unattachedTx'' = unattachedTx' # _unbalancedTx <<< _transaction .~ tx'
@@ -549,7 +559,7 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
         evalExUnitsAndMinFee unattachedTx''
       let feesWithBuffer = fees' + feeBuffer
       except <<< map (\body -> unattachedTx''' # _body' .~ body) $
-        preBalanceTxBody minUtxos' feesWithBuffer utxoIndex' ownAddr' utxoMinVal
+        preBalanceTxBody minUtxos' feesWithBuffer utxoIndex' addrToBalance' utxoMinVal
           txBody'
 
   -- We expect the user has a minimum amount of Ada (this buffer) on top of
@@ -569,6 +579,7 @@ balanceTx unattachedTx@(UnattachedUnbalancedTx { unbalancedTx: t }) = do
   -- top of their transaction as input.
   feeBuffer :: BigInt
   feeBuffer = fromInt 500000
+
 
 addTxCollateral :: TransactionUnspentOutput -> Transaction -> Transaction
 addTxCollateral (TransactionUnspentOutput { input }) transaction =

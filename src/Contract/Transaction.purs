@@ -5,6 +5,7 @@ module Contract.Transaction
   , balanceAndSignTx
   , balanceAndSignTxs
   , balanceAndSignTxE
+  , balanceAndSignTxE'
   , balanceTx
   , balanceTxM
   , calculateMinFee
@@ -31,7 +32,7 @@ import Prelude
 
 import BalanceTx (BalanceTxError) as BalanceTxError
 import BalanceTx (FinalizedTransaction)
-import BalanceTx (balanceTx) as BalanceTx
+import BalanceTx (balanceTx') as BalanceTx
 import Cardano.Types.Transaction
   ( AuxiliaryData(AuxiliaryData)
   , AuxiliaryDataHash(AuxiliaryDataHash)
@@ -109,7 +110,7 @@ import Control.Monad.Reader (asks, runReaderT, ReaderT)
 import Data.Array.NonEmpty as NonEmptyArray
 import Data.Either (Either, hush)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(Nothing))
 import Data.Newtype (class Newtype, unwrap, wrap)
 import Data.Show.Generic (genericShow)
 import Data.Traversable (class Traversable, for_, traverse)
@@ -124,7 +125,7 @@ import QueryM (calculateMinFee, signTransaction, submitTxOgmios) as QueryM
 import ReindexRedeemers (ReindexErrors(CannotGetTxOutRefIndexForRedeemer)) as ReindexRedeemersExport
 import ReindexRedeemers (reindexSpentScriptRedeemers) as ReindexRedeemers
 import Serialization (convertTransaction, toBytes) as Serialization
-import Serialization.Address (NetworkId)
+import Serialization.Address (Address, NetworkId)
 import TxOutput (scriptOutputToTransactionOutput) as TxOutput
 import Types.ScriptLookups (MkUnbalancedTxError(..), mkUnbalancedTx) as ScriptLookups
 import Types.ScriptLookups (UnattachedUnbalancedTx)
@@ -207,7 +208,14 @@ balanceTx
   :: forall (r :: Row Type)
    . UnattachedUnbalancedTx
   -> Contract r (Either BalanceTxError.BalanceTxError FinalizedTransaction)
-balanceTx = wrapContract <<< BalanceTx.balanceTx
+balanceTx = balanceTx' Nothing
+
+balanceTx'
+  :: forall (r :: Row Type)
+   . Maybe Address
+  -> UnattachedUnbalancedTx
+  -> Contract r (Either BalanceTxError.BalanceTxError FinalizedTransaction)
+balanceTx' addr = wrapContract <<< BalanceTx.balanceTx' addr
 
 -- Helper to avoid repetition
 withTransactions
@@ -252,7 +260,7 @@ withBalancedTxs
    . Array UnattachedUnbalancedTx
   -> (Array FinalizedTransaction -> Contract r a)
   -> Contract r a
-withBalancedTxs = withTransactions balanceTxs unwrap
+withBalancedTxs = withTransactions (balanceTxs Nothing) unwrap
 
 -- | Execute an action on a balanced transaction (`balanceTx` will
 -- | be called). Within this function, all transaction inputs
@@ -303,9 +311,10 @@ balanceTxs
        (t :: Type -> Type)
        (r :: Row Type)
    . Traversable t
-  => t UnattachedUnbalancedTx
+  => Maybe Address
+  -> t UnattachedUnbalancedTx
   -> Contract r (t FinalizedTransaction)
-balanceTxs unbalancedTxs =
+balanceTxs addr unbalancedTxs =
   unlockAllOnError $ traverse balanceAndLock unbalancedTxs
   where
   unlockAllOnError :: forall (a :: Type). Contract r a -> Contract r a
@@ -319,7 +328,7 @@ balanceTxs unbalancedTxs =
 
   balanceAndLock :: UnattachedUnbalancedTx -> Contract r FinalizedTransaction
   balanceAndLock unbalancedTx = do
-    balancedTx <- liftedE $ balanceTx unbalancedTx
+    balancedTx <- liftedE $ balanceTx' addr unbalancedTx
     void $ withUsedTxouts $ lockTransactionInputs (unwrap balancedTx)
     pure balancedTx
 
@@ -363,7 +372,14 @@ balanceAndSignTxs
   :: forall (r :: Row Type)
    . Array UnattachedUnbalancedTx
   -> Contract r (Array BalancedSignedTransaction)
-balanceAndSignTxs txs = balanceTxs txs >>= traverse
+balanceAndSignTxs = balanceAndSignTxs' Nothing
+
+balanceAndSignTxs'
+  :: forall (r :: Row Type)
+   . Maybe Address
+  -> Array UnattachedUnbalancedTx
+  -> Contract r (Array BalancedSignedTransaction)
+balanceAndSignTxs' addr txs = (balanceTxs addr) txs >>= traverse
   (liftedM "error signing a transaction" <<< signTransaction')
 
 -- | Balances an unbalanced transaction and signs it.
@@ -378,7 +394,14 @@ balanceAndSignTxE
   :: forall (r :: Row Type)
    . UnattachedUnbalancedTx
   -> Contract r (Either Error BalancedSignedTransaction)
-balanceAndSignTxE tx = try $ balanceAndSignTxs [ tx ] >>=
+balanceAndSignTxE = balanceAndSignTxE' Nothing
+
+balanceAndSignTxE'
+  :: forall (r :: Row Type)
+   . Maybe Address
+  -> UnattachedUnbalancedTx
+  -> Contract r (Either Error BalancedSignedTransaction)
+balanceAndSignTxE' addr tx = try $ balanceAndSignTxs' addr [ tx ] >>=
   case _ of
     [ x ] -> pure x
     -- Which error should we throw here?
