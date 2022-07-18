@@ -1693,17 +1693,17 @@
         "unstable_nixpkgs": "unstable_nixpkgs"
       },
       "locked": {
-        "lastModified": 1656090737,
-        "narHash": "sha256-zan1OMF5/O7lfYAA9y4JgveEVKK2Pw9tWBVYbMcPUto=",
+        "lastModified": 1658143527,
+        "narHash": "sha256-odoAINZlYoygNti9Lo6x8sqNa6oCyAJxM9hCurF0bPs=",
         "owner": "mlabs-haskell",
         "repo": "ogmios-datum-cache",
-        "rev": "98b1c4f2badc7ab1efe4be188ee9f9f5e4e54bb0",
+        "rev": "bf76a74fa9e94d97310087dcda7b3aca259f96dd",
         "type": "github"
       },
       "original": {
         "owner": "mlabs-haskell",
         "repo": "ogmios-datum-cache",
-        "rev": "98b1c4f2badc7ab1efe4be188ee9f9f5e4e54bb0",
+        "rev": "bf76a74fa9e94d97310087dcda7b3aca259f96dd",
         "type": "github"
       }
     },
