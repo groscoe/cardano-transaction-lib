@@ -332,7 +332,7 @@ evalExUnitsAndMinFee' unattachedTx =
     -- Calculate the minimum fee for a transaction:
     minFee <- ExceptT $ QueryM.calculateMinFee finalizedTx
       <#> bimap EvalMinFeeError unwrap
-    pure $ reindexedUnattachedTxWithExUnits /\ minFee
+    pure $ reindexedUnattachedTxWithExUnits /\ (fromInt 2 * minFee)
 
 evalExUnitsAndMinFee
   :: UnattachedUnbalancedTx
